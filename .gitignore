@@ -9,3 +9,20 @@ aiarena/logs
 aiarena/scripts/actor/learner.iplist.new
 aiarena/scripts/learner/learner.iplist.new
 aiarena/code
+
+# ============================================
+# Gamecore（禁止上传）
+# ============================================
+hok_env_gamecore/
+hok_env_gamecore.zip
+*.zip
+
+# ============================================
+# 中文文档（禁止上传）
+# ============================================
+*_zh.md
+*.pth
+*.log
+*.json
+*.stat
+*.abs

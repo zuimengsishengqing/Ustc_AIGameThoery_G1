@@ -26,7 +26,7 @@ class DataPrefetcher:
         with torch.cuda.stream(self.stream):
             self.next_data = torch.from_numpy(self.next_data).to(device=self.device, non_blocking=True)
             if self.use_fp16:
-                self.next_data = torch.from_numpy(self.next_data).to(dtype=torch.float32, non_blocking=True)
+                self.next_data = self.next_data.half()
 
     def next(self):
         torch.cuda.current_stream(self.device).wait_stream(self.stream)

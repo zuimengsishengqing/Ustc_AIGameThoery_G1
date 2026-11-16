@@ -188,6 +188,7 @@ class Algorithm(nn.Module):
         self.target_embed_mlp = make_fc_layer(32, self.target_embed_dim, use_bias=False)
 
     def forward(self, data_list, inference=False):
+        # 层层拆分拿到名词
         if not inference:
             _, data_list = data_list
 
@@ -230,10 +231,7 @@ class Algorithm(nn.Module):
         global_info_list = feature_vec_split_list[3]
 
         _soldier_1_10 = soldier_vec_list[0].split(DimConfig.DIM_OF_SOLDIER_1_10, dim=1)
-        _soldier_11_20 = soldier_vec_list[1].split(
-            DimConfig.DIM_OF_SOLDIER_11_20, dim=1
-        )
-
+        _soldier_11_20 = soldier_vec_list[1].split(DimConfig.DIM_OF_SOLDIER_11_20, dim=1)
         _organ_1_2 = organ_vec_list[0].split(DimConfig.DIM_OF_ORGAN_1_2, dim=1)
         _organ_3_4 = organ_vec_list[1].split(DimConfig.DIM_OF_ORGAN_3_4, dim=1)
         _hero_frd = hero_vec_list[0].split(DimConfig.DIM_OF_HERO_FRD, dim=1)
@@ -245,9 +243,7 @@ class Algorithm(nn.Module):
 
         """ real computations"""
         # hero_main
-        for index in range(len(_hero_main)):
-            main_hero = self.hero_main_mlp(_hero_main[index])
-        hero_main_result = main_hero
+        hero_main_result = self.hero_main_mlp(_hero_main[0])
 
         hero_emy_result_list = []
         for index in range(len(_hero_emy)):
@@ -271,7 +267,7 @@ class Algorithm(nn.Module):
             _, split_1 = hero_frd_fc_out.split([96, 32], dim=1)
             tar_embed_list.append(split_1)
             hero_frd_result_list.append(hero_frd_fc_out)
-
+        #注意，在1v1里面插入1然后max最后拍平的操作，是恒等变换，没有意义！
         hero_frd_concat_result = torch.cat(hero_frd_result_list, dim=1)
         reshape_hero_frd = hero_frd_concat_result.reshape(-1, 1, 1, 128)
         pool_hero_frd, _ = reshape_hero_frd.max(dim=2)
@@ -295,6 +291,7 @@ class Algorithm(nn.Module):
             soldier_emy_mlp_out = self.soldier_mlp(_soldier_11_20[index])
             soldier_emy_fc_out = self.soldier_emy_fc(soldier_emy_mlp_out)
             soldier_emy_result_list.append(soldier_emy_fc_out)
+            #每个敌方小兵可以选中，我方小兵不可选中；
             tar_embed_list.append(soldier_emy_fc_out)
 
         soldier_emy_concat_result = torch.cat(soldier_emy_result_list, dim=1)
@@ -326,8 +323,9 @@ class Algorithm(nn.Module):
         pool_emy_organ, _ = reshape_emy_organ.max(dim=2)
         output_dim = int(np.prod(pool_emy_organ.shape[1:]))
         reshape_pool_emy_organ = pool_emy_organ.reshape(-1, output_dim)
+        #可以攻击敌方防御塔，没有我方； 为什么只有防御塔是对reshape maxpool之后的加入tar，本质maxpool是恒等场景
         tar_embed_list.append(reshape_pool_emy_organ)
-
+        #空选项，没有攻击目标时
         tar_embed_0 = 0.1 * torch.ones_like(tar_embed_list[-1]).to(feature_vec.device)
         tar_embed_list.insert(0, tar_embed_0)
 
@@ -347,9 +345,7 @@ class Algorithm(nn.Module):
 
         # public concat
         fc_public_result = self.concat_mlp(concat_result)
-        reshape_fc_public_result = fc_public_result.reshape(
-            -1, self.lstm_time_steps, 512
-        )
+        reshape_fc_public_result = fc_public_result.reshape(-1, self.lstm_time_steps, 512)
 
         # public lstm
         lstm_initial_state_in = [
@@ -357,7 +353,7 @@ class Algorithm(nn.Module):
             lstm_initial_state[1].unsqueeze(0),
         ]
         lstm_outputs, state = self.lstm(reshape_fc_public_result, lstm_initial_state_in)
-
+        #每一帧所有batch
         lstm_outputs = torch.cat(
             [lstm_outputs[:, idx, :] for idx in range(lstm_outputs.size(1))], dim=1
         )
@@ -471,8 +467,6 @@ class Algorithm(nn.Module):
         self.value_cost = 0.5 * torch.mean(
             torch.square(reward - fc2_value_result_squeezed), dim=0
         )
-        new_advantage = reward - fc2_value_result_squeezed
-        self.value_cost = 0.5 * torch.mean(torch.square(new_advantage), dim=0)
 
         # for entropy loss calculate
         label_logits_subtract_max_list = []
@@ -490,7 +484,7 @@ class Algorithm(nn.Module):
                 one_hot_actions = nn.functional.one_hot(
                     label_list[task_index].long(), self.label_size_list[task_index]
                 )
-
+                # （游戏状态）非法动作会减去 10^20，使 logit 变成 -inf，softmax 后概率为 0。
                 legal_action_flag_list_max_mask = (
                     1 - legal_action_flag_list[task_index]
                 ) * boundary
@@ -543,7 +537,7 @@ class Algorithm(nn.Module):
 
                 self.policy_cost = self.policy_cost + temp_policy_loss
 
-        # cross entropy loss
+        # cross entropy loss熵正则化
         current_entropy_loss_index = 0
         entropy_loss_list = []
         for task_index in range(len(self.is_reinforce_task_list)):

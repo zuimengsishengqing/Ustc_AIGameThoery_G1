@@ -4,6 +4,8 @@ import numpy as np
 import torch
 import os
 
+from torch.utils.tensorboard import SummaryWriter
+
 from rl_framework.learner.dataset.network_dataset.pytorch.network_dataset_random import (
     NetworkDataset,
 )
@@ -72,6 +74,9 @@ class Benchmark(object):
         self.step_train_times = list()
         self.skip_update_times = 0
         self._last_save_model_time = 0
+        self.tb_writer = SummaryWriter(
+            log_dir=os.path.join(config_manager.train_dir, "tensorboard")
+        )
         LOG.info("init finished")
 
     def init_env(self, node_info):
@@ -120,6 +125,13 @@ class Benchmark(object):
                 self.net, self.optimizer, model_checkpoint_path
             )
             self.local_step = 0 if ckpt_step is None else ckpt_step
+        else:
+            resume_path = os.path.join(self.model_manager.save_checkpoint_dir, "model.pth")
+            if os.path.exists(resume_path):
+                ckpt_step = self.model_manager.restore_model_and_optimizer(
+                    self.net, self.optimizer, resume_path
+                )
+                self.local_step = 0 if ckpt_step is None else ckpt_step
         self.init_step = self.local_step
         get_lr_scheduler = getattr(self.net, "get_lr_scheduler", None)
         if callable(get_lr_scheduler):
@@ -137,7 +149,7 @@ class Benchmark(object):
             hvd.broadcast_parameters(self.net.state_dict(), root_rank=0)
             hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
             self.net_wrapper = self.net
-        elif self.distributed_backend == "ddp":
+        elif self.distributed_backend == "ddp" and self.node.rank_size > 1:
             from torch.nn.parallel import DistributedDataParallel as DDP
 
             self.net_wrapper = DDP(
@@ -188,6 +200,7 @@ class Benchmark(object):
                 rst_list = self.net_wrapper(data_list)
                 total_loss, info_list = self.net.compute_loss(data_list, rst_list)
                 results["total_loss"] = total_loss.item()
+            #梯度回传
             self.scaler.scale(total_loss).backward()
             if (
                 self.distributed_backend == "horovod" and self.node.has_hvd
@@ -213,6 +226,7 @@ class Benchmark(object):
             rst_list = self.net_wrapper(data_list)
             total_loss, info_list = self.net.compute_loss(data_list, rst_list)
             results["total_loss"] = total_loss.item()
+            #梯度回传
             total_loss.backward()
             if (
                 self.distributed_backend == "horovod" and self.node.has_hvd
@@ -231,6 +245,7 @@ class Benchmark(object):
                     self.optimizer.step()
             else:
                 self.optimizer.step()
+            # Adam: θ = θ - lr * m_hat / (sqrt(v_hat) + ε)
         if self.lr_scheduler:
             self.lr_scheduler.step()
 
@@ -298,6 +313,32 @@ class Benchmark(object):
                 )
                 self.log_manager.print_result(results)
 
+                self.tb_writer.add_scalar(
+                    "Loss/total", results["total_loss"], self.local_step
+                )
+                self.tb_writer.add_scalar(
+                    "Speed/samples_per_sec",
+                    results["sample_consume_speed"],
+                    self.local_step,
+                )
+                if results.get("sample_recv_speed") is not None:
+                    self.tb_writer.add_scalar(
+                        "Speed/recv_per_sec",
+                        results["sample_recv_speed"],
+                        self.local_step,
+                    )
+                if "info_list" in results:
+                    info = results["info_list"]
+                    if isinstance(info, list) and len(info) > 1 and isinstance(info[1], list):
+                        self.tb_writer.add_scalar("Loss/value", info[1][0], self.local_step)
+                        self.tb_writer.add_scalar("Loss/policy", info[1][1], self.local_step)
+                        self.tb_writer.add_scalar("Loss/entropy", info[1][2], self.local_step)
+                self.tb_writer.add_scalar(
+                    "Train/batch_size",
+                    self.config_manager.batch_size,
+                    self.local_step,
+                )
+
             if self._check_save_model() and self.node.is_chief_rank:
                 self.model_manager.save_checkpoint(
                     self.net, self.optimizer, self.local_step
@@ -319,6 +360,7 @@ class Benchmark(object):
                 self.net, self.optimizer, self.local_step
             )
             self._last_save_model_time = time.time()
+            self.tb_writer.close()
 
     def run(self):
         self._do_train()

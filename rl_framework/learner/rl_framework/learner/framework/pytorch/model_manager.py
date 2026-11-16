@@ -129,10 +129,11 @@ class ModelManager(object):
         LOG.info("Saving checkpoint_{}", step)
         self._save_checkpoint(net, optimizer, self.save_checkpoint_dir, step)
 
-        ckpt_tar_file = self._backup_checkpoint(
-            self.save_checkpoint_dir, self.backup_checkpoint_dir, step
-        )
-        LOG.info("Backup checkpoint_{} {}", step, ckpt_tar_file)
+        # 如需备份 tar 存档, 取消下面注释即可
+        # ckpt_tar_file = self._backup_checkpoint(
+        #     self.save_checkpoint_dir, self.backup_checkpoint_dir, step
+        # )
+        # LOG.info("Backup checkpoint_{} {}", step, ckpt_tar_file)
 
     def _save_checkpoint(
         self,
@@ -145,6 +146,8 @@ class ModelManager(object):
         os.makedirs(checkpoint_dir, exist_ok=True)
         step = int(step)
         checkpoint_file = os.path.join(checkpoint_dir, "model.pth")
+        # 先写入临时文件，写完后再原子重命名，避免 Actor 读到写了一半的模型
+        temp_file = os.path.join(checkpoint_dir, "model.pth.tmp")
         if save_optimizer_state:
             torch.save(
                 {
@@ -152,7 +155,7 @@ class ModelManager(object):
                     "optimizer_state_dict": optimizer.state_dict(),
                     "step": step,
                 },
-                checkpoint_file,
+                temp_file,
             )
         else:
             torch.save(
@@ -160,5 +163,6 @@ class ModelManager(object):
                     "network_state_dict": net.state_dict(),
                     "step": step,
                 },
-                checkpoint_file,
+                temp_file,
             )
+        os.replace(temp_file, checkpoint_file)

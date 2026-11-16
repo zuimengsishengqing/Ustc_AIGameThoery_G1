@@ -66,7 +66,7 @@ class Agent(AgentBase):
                 "SINGLE_TEST: backend not in [tensorflow, pytorch]..."
             )
 
-        if single_test or not model_pool_addr:
+        if single_test or not model_pool_addr or model_pool_addr == [""]:
             self._model_pool_api = None
         else:
             self._model_pool_api = ModelPoolAPIs(model_pool_addr)
@@ -132,7 +132,35 @@ class Agent(AgentBase):
                     "SINGLE_TEST: backend not in [tensorflow, pytorch]..."
                 )
         else:
-            if model_path is None:
+            if model_path is None and self._model_pool_api is None:
+                LOG.info("No model_pool, load from local checkpoint dir")
+                local_ckpt_dir = "/aiarena/checkpoints"
+                import os as _os
+                local_ckpt_file = _os.path.join(local_ckpt_dir, "model.pth")
+                if _os.path.exists(local_ckpt_file):
+                    max_retry = 3
+                    for retry in range(max_retry):
+                        try:
+                            self._predictor.load_model(local_ckpt_dir)
+                            self.last_model_path = local_ckpt_dir
+                            LOG.info("Loaded local checkpoint: {}", local_ckpt_file)
+                            break
+                        except Exception as e:
+                            LOG.error(
+                                "读取模型失败 (可能是文件写了一半或网络抖动): {}", e
+                            )
+                            if retry < max_retry - 1:
+                                LOG.warning(
+                                    "等待 2 秒后重试... ({}/{})", retry + 1, max_retry
+                                )
+                                time.sleep(2)
+                            else:
+                                LOG.warning("重试仍失败，本局使用初始化权重")
+                else:
+                    LOG.warning("No local checkpoint found, using init weights")
+                self.is_latest_model = True
+                return
+            elif model_path is None:
                 while True:
                     try:
                         if self.keep_latest:
