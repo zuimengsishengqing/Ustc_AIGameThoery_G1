@@ -999,3 +999,56 @@ cd /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/aiarena/1v1/actor
 bash start_actors_platform.sh 4
 关闭：
 pkill -f entry_platform.py
+
+# 蒸馏：
+启动蒸馏分三步（都在 WSL 里，假设 mem_pool、GameCore Server 已经按平时训练的方式跑起来了，这部分我没有改动）：
+
+先启动gamecore；
+cd E:\LearnAI\AIvs_class\hok_env\hok_env\hok_env_gamecore\gamecore
+gamecore-server.exe server --server-address :23432
+
+0. 进入环境
+
+wsl -d Ubuntu2204
+source ~/hokenv/bin/activate
+cd /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/aiarena/1v1
+1.（可选）重新指定教师 ckpt 如果要用 anlys/ 下别的文件当教师（目前 /aiarena/checkpoints_local_teacher/model.pth 用的是 modelcloud750w.pth）：
+
+cd /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/aiarena/1v1/actor
+python prepare_teacher_ckpt.py /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/anlys/model450w.pth \
+    --dest /aiarena/checkpoints_local_teacher
+
+不换教师就跳过这步，直接用现有的。
+
+2. 启动 learner（蒸馏模式）
+wsl -d Ubuntu2204
+source ~/hokenv/bin/activate
+cd /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/aiarena/1v1/learner
+AIARENA_DISTILL=1 python train_platform.py
+tail -f /aiarena/logs/learner/train.log
+3. 启动 actor（蒸馏模式，教师采样）
+
+wsl -d Ubuntu2204
+source ~/hokenv/bin/activate
+cd /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/aiarena/1v1/actor
+bash start_actors_distill.sh 4 "" 5    # 4 = actor 数量，可改，""第二个参数模型路径；5是偏移（从actor5开始）
+// tail -f /aiarena/logs/actor/actor_distill_*.log
+ 【或者同时指定教师 ckpt 源文件（脚本内部会自动调用 prepare_teacher_ckpt.py）：
+【 bash start_actors_distill.sh 4 /mnt/e/LearnAI/AIvs_class/hok_env/hok_env/anlys/model450w.pth
+
+
+查看日志/状态
+
+code.sh
+tail -f /aiarena/logs/learner/train.log
+tail -f /aiarena/logs/actor/actor_distill_*.log
+ps -elf | grep -E "train_platform.py|entry_platform.py"
+停止
+
+code.sh
+cd actor && bash stop_actors.sh && cd ..     # 停 actor
+pkill -f "train_platform.py"                  # 停 learner
+关键点：AIARENA_DISTILL=1 这个环境变量 learner 和 actor 两边都要设（start_actors_distill.sh 里已经自动 export 了 actor 侧，learner 侧需要你手动加，如上面第 2 步所示），因为 config_platform.Config.DISTILL 是在 import 时读取环境变量的。
+#### 查看tensorborad：
+source ~/hokenv/bin/activate
+tensorboard --logdir=/aiarena/logs/learner/tensorboard --bind_all

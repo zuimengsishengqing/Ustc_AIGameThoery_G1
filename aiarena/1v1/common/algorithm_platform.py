@@ -189,6 +189,9 @@ class Algorithm(nn.Module):
             self.target_embed_dim, self.target_embed_dim, use_bias=False
         )
 
+        # 知识蒸馏模式：compute_loss 用 KL 散度拟合教师软标签（样本 prob 字段）
+        self.distill = Config.DISTILL
+
     def forward(self, data_list, inference=False):
         if not inference:
             _, data_list = data_list
@@ -458,6 +461,14 @@ class Algorithm(nn.Module):
             feature_legal_action, self.label_size_list, dim=1
         )
 
+        if self.distill:
+            return self._compute_distill_loss(
+                label_result,
+                old_label_probability_list,
+                legal_action_flag_list,
+                weight_list,
+            )
+
         fc2_value_result_squeezed = value_result.squeeze(dim=1)
         self.value_cost = 0.5 * torch.mean(
             torch.square(reward - fc2_value_result_squeezed), dim=0
@@ -567,6 +578,70 @@ class Algorithm(nn.Module):
         return self.loss, [
             self.loss,
             [self.value_cost, self.policy_cost, self.entropy_cost],
+        ]
+
+    def _compute_distill_loss(
+        self,
+        label_result,
+        old_label_probability_list,
+        legal_action_flag_list,
+        weight_list,
+    ):
+        # 知识蒸馏：学生 softmax 分布拟合教师软标签（样本 prob 字段），
+        # 逐头计算 KL(teacher || student)，temperature=1（教师标签已为归一化概率）。
+        epsilon = 1e-5
+        boundary = torch.pow(torch.tensor(10.0), torch.tensor(20.0))
+        self.distill_cost = torch.tensor(0.0)
+        distill_loss_list = []
+
+        for task_index in range(len(self.is_reinforce_task_list)):
+            if not self.is_reinforce_task_list[task_index]:
+                distill_loss_list.append(torch.tensor(0.0))
+                continue
+
+            legal_action_flag_list_max_mask = (
+                1 - legal_action_flag_list[task_index]
+            ) * boundary
+            label_logits_subtract_max = torch.clamp(
+                label_result[task_index]
+                - torch.max(
+                    label_result[task_index] - legal_action_flag_list_max_mask,
+                    dim=1,
+                    keepdim=True,
+                ).values,
+                -boundary,
+                1,
+            )
+            label_exp_logits = (
+                legal_action_flag_list[task_index]
+                * torch.exp(label_logits_subtract_max)
+                + self.min_policy
+            )
+            label_probability = (
+                1.0 * label_exp_logits / label_exp_logits.sum(1, keepdim=True)
+            )
+
+            teacher_probability = old_label_probability_list[task_index].clamp(
+                min=epsilon
+            )
+            kl = -torch.sum(
+                teacher_probability * torch.log(label_probability + epsilon), dim=1
+            )
+            temp_kl = torch.sum(
+                kl * weight_list[task_index].float()
+            ) / torch.maximum(
+                torch.sum(weight_list[task_index].float()), torch.tensor(1.0)
+            )
+
+            self.distill_cost = self.distill_cost + temp_kl
+            distill_loss_list.append(temp_kl)
+
+        self.distill_cost_list = distill_loss_list
+        self.loss = self.distill_cost
+
+        return self.loss, [
+            self.loss,
+            [self.distill_cost, torch.tensor(0.0), torch.tensor(0.0)],
         ]
 
     def format_data(self, datas, inference=False):

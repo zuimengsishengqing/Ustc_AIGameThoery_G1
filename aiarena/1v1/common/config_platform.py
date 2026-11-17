@@ -138,3 +138,11 @@ class Config:
     GAMMA = 0.995
     LAMDA = 0.95
     IS_TRAIN = True
+
+    # 知识蒸馏配置：教师为本地 725 维/8 动作头大模型，学生为平台 350 维/9 动作头小模型。
+    # actor 端用教师策略采样产生软标签（写入样本 prob 字段），learner 端用 KL 散度拟合教师分布。
+    DISTILL = os.getenv("AIARENA_DISTILL", "0") == "1"
+    # 教师 checkpoint 目录（内部为 model.pth）
+    TEACHER_CKPT_PATH = os.getenv(
+        "AIARENA_TEACHER_CKPT_PATH", "/aiarena/checkpoints_local_teacher"
+    )
